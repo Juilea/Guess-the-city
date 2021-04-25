@@ -1,0 +1,175 @@
+import vk_api
+from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
+from password import TOKEN, u_id, u_group
+from data import db_session
+from data.__all_models import User, Info, WorkWithPeople
+import random
+
+vk_session = vk_api.VkApi(token=TOKEN)
+vk = vk_session.get_api()
+db_session.global_init("db/persons.db")
+db_sess = db_session.create_session()
+
+
+def game(url):
+    vk.messages.send(user_id=url,
+                     message="Да начнётся игра!",
+                     random_id=random.randint(0, 2 ** 64))
+    user = db_sess.query(User).filter(User.from_id == url).first()
+    user.play_now = 1
+    db_sess.commit()
+    cites = random.sample(range(1, 101), 10)
+    for i in range(10):
+        a = db_sess.query(Info).filter(Info.id == cites[i]).first()
+        table = WorkWithPeople()
+        table.city = a.city
+        table.local_id = i + 1
+        table.from_id = url
+        table.right = 0
+        db_sess.add(table)
+        db_sess.commit()
+
+
+def main():
+    longpoll = VkBotLongPoll(vk_session, u_group)
+
+    for event in longpoll.listen():
+
+        if event.type == VkBotEventType.MESSAGE_NEW:
+            r = vk.users.get(user_id=event.obj.message['from_id'], fields="city")
+            if not db_sess.query(User).filter(User.from_id == event.obj.message['from_id']).first():
+                user = User()
+                user.name = r[0]['first_name']
+                user.last_name = r[0]['last_name']
+                user.from_id = r[0]['id']
+                user.play_now = 0
+                user.result = 0
+                user.opened = 0
+                db_sess.add(user)
+                db_sess.commit()
+                vk.messages.send(user_id=event.obj.message['from_id'],
+                                 message="Регистрация прошла успешно.",
+                                 random_id=random.randint(0, 2 ** 64))
+            user = db_sess.query(User).filter(User.from_id == r[0]['id']).first()
+            if 10 > user.play_now > 0:
+                work = db_sess.query(WorkWithPeople).filter(
+                    WorkWithPeople.from_id == r[0]['id'], WorkWithPeople.local_id == user.play_now).first()
+                if event.obj.message['text'] == db_sess.query(WorkWithPeople).filter(
+                        WorkWithPeople.from_id == r[0]['id'],
+                        WorkWithPeople.local_id == user.play_now).first().city:
+                    work.right = 1
+                else:
+                    work.right = 0
+                user.play_now = user.play_now + 1
+                db_sess.commit()
+                info = db_sess.query(WorkWithPeople).filter(WorkWithPeople.from_id == r[0]['id'],
+                                                            WorkWithPeople.local_id == user.play_now).first()
+                info = db_sess.query(Info).filter(Info.city == info.city).first()
+                vk.messages.send(user_id=r[0]['id'],
+                                 message=info.fact,
+                                 attachment="photo" + info.photo_id,
+                                 random_id=random.randint(0, 2 ** 64))
+            elif user.play_now == 10:
+                work = db_sess.query(WorkWithPeople).filter(
+                    WorkWithPeople.from_id == r[0]['id'], WorkWithPeople.local_id == user.play_now).first()
+                if event.obj.message['text'] == db_sess.query(WorkWithPeople).filter(
+                        WorkWithPeople.from_id == r[0]['id'],
+                        WorkWithPeople.local_id == user.play_now).first().city:
+                    work.right = 1
+                user.play_now = 0
+                count = 0
+                for i in db_sess.query(WorkWithPeople).filter(WorkWithPeople.from_id == r[0]['id']):
+                    count += i.right
+                if user.result < count:
+                    user.result = count
+                vk.messages.send(user_id=r[0]['id'],
+                                 message="Ваш результат - {}".format(count),
+                                 random_id=random.randint(0, 2 ** 64))
+
+                db_sess.query(WorkWithPeople).filter(WorkWithPeople.from_id == r[0]['id']).delete()
+                db_sess.commit()
+                if count == 0:
+                    text = "0 - это не значит плохо. Это значит, что стоит ещё поиграть в" \
+                           " нашу игру и потренероватся угадывать города"
+                if 0 < count < 6:
+                    text = "Вы знаете о городах России не очень мало, но всегда можно улучшить результат"
+                if 5 < count < 10:
+                    text = "Вы знаток по городам России, но всё же не совсем. Не хотите сыграть ещё раз?"
+                if count == 10:
+                    text = "Торжественно объявляю вас знатаком нашей игры. Может быть хотите предложить свой город?" \
+                           "Если появится желание начните со слов, Дорогой админ и напишите город, факт о нём и при" \
+                           "ложите фото"
+                vk.messages.send(user_id=r[0]['id'],
+                                 message=text,
+                                 random_id=random.randint(0, 2 ** 64))
+
+            if event.obj.message['text'] == "!возможности":
+                vk.messages.send(user_id=r[0]['id'],
+                                 message="!возможности - вызывает весвозможные команды\n"
+                                         "!начать игру - начало самой игры\n"
+                                         "!личный рекорд - вывод максимального результата на данном акаунте\n"
+                                         "!рейтинг - вывод топ 10 игроков\n"
+                                         "Дорогой админ - следует начать своё одно сообщение для связи с "
+                                         "админом\n"
+                                         "!правила игры - выводит правила данной игры\n"
+                                         "!регистрация - с помощью данной команды вы даёте согласие, на показ вашего им"
+                                         "ени в рейтинге",
+                                 random_id=random.randint(0, 2 ** 64))
+            if event.obj.message['text'] == "!начать игру":
+                game(r[0]['id'])
+                user = db_sess.query(User).filter(User.from_id == r[0]['id']).first()
+                info = db_sess.query(WorkWithPeople).filter(WorkWithPeople.from_id == r[0]['id'],
+                                                            WorkWithPeople.local_id == user.play_now).first()
+                info = db_sess.query(Info).filter(Info.city == info.city).first()
+                vk.messages.send(user_id=r[0]['id'],
+                                 message=info.fact,
+                                 attachment="photo" + info.photo_id,
+                                 random_id=random.randint(0, 2 ** 64))
+            if event.obj.message['text'] == "!личный рекорд":
+                vk.messages.send(user_id=r[0]['id'],
+                                 message="Ваш рекорд - " + str(user.result),
+                                 random_id=random.randint(0, 2 ** 64))
+            if event.obj.message['text'] == "!рейтинг":
+                a = db_sess.query(User).filter(User.opened == 1)
+                count = []
+                for i in a:
+                    count.append(i)
+                count.sort(key=lambda x: x.result, reverse=True)
+                count = "\n".join(list(map(lambda x: "{} {} - {}".format(x.last_name, x.name, x.result), count[:10])))
+                vk.messages.send(user_id=r[0]['id'],
+                                 message=count,
+                                 random_id=random.randint(0, 2 ** 64))
+            if event.obj.message['text'][:13] == "Дорогой админ":
+                vk.messages.send(user_id=u_id,
+                                 message=event.obj.message['text'],
+                                 random_id=random.randint(0, 2 ** 64))
+                vk.messages.send(user_id=u_id,
+                                 message=event.obj.message['from_id'],
+                                 random_id=random.randint(0, 2 ** 64))
+            if event.obj.message['text'] == "!правила игры":
+                vk.messages.send(user_id=r[0]['id'],
+                                 message="В этой игре Вам будет предлагаться фото случайного города в России с насе"
+                                         "лением более 100 тыс. человек и некоторый факт, по которому можно узнать,"
+                                         " какой именно город изображен. Ваша задача - правильно угадать город и на"
+                                         "писать его название с большой буквы. Из пяти раундов игры будет рассчитан"
+                                         " Ваш общий счет, который вы узнаете в конце.",
+                                 random_id=random.randint(0, 2 ** 64))
+            if event.obj.message['text'] == "!просто послушать приветствие":
+                vk.messages.send(user_id=r[0]["id"],
+                                 message="Здравствуйте, {}!".format(user.name),
+                                 random_id=random.randint(0, 2 ** 64))
+            if event.obj.message['text'] == "!регистрация":
+                if user.opened:
+                    vk.messages.send(user_id=r[0]['id'],
+                                     message="Вы уже регистрировались.",
+                                     random_id=random.randint(0, 2 ** 64))
+                else:
+                    user.opened = 1
+                    db_sess.commit()
+                    vk.messages.send(user_id=event.obj.message['from_id'],
+                                     message="Регистрация прошла успешно.",
+                                     random_id=random.randint(0, 2 ** 64))
+
+
+if __name__ == '__main__':
+    main()
